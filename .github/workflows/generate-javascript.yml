@@ -10,7 +10,7 @@ on:
       genCommit:
         type: string
         required: true
-        default: '82c3ff5'
+        default: 'f0bb447'
         description: 'The commit to use for the kubernetes-client/gen repo'
 
 
@@ -19,11 +19,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Javascript
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Setup Node
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: '16'
+          node-version: '20'
       - name: Checkout Gen
         run: |
           git clone https://github.com/kubernetes-client/gen
@@ -31,7 +31,12 @@ jobs:
           git checkout "${{ github.event.inputs.genCommit }}"
           # apply https://github.com/kubernetes-client/gen/pull/224
           git config --global user.name "Github Actions"
-          git cherry-pick --strategy=recursive -X theirs c557f7f
+          git config --global user.email "<>"
+          git cherry-pick --strategy=recursive -X theirs c557f7f b32dcd6 0ef2cec 9701a7c a608a9d
+          rm -rf gen/.git
+      # apply https://github.com/kubernetes-client/gen/pull/237
+      - name: Patch Dockerfile
+        run: echo "RUN git config --system --add safe.directory /source/openapi-generator" >> gen/openapi/openapi-generator/Dockerfile
       - name: Generate Branch Name
         run: |
           SUFFIX=$(openssl rand -hex 4)
