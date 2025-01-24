@@ -56,7 +56,7 @@ describe('Exec', () => {
         it('should correctly attach to streams', async () => {
             const kc = new KubeConfig();
             const fakeWebSocketInterface: WebSocketInterface = mock(WebSocketHandler);
-            const fakeWebSocket: WebSocket = mock(WebSocket);
+            const fakeWebSocket: WebSocket.WebSocket = mock(WebSocket);
             const callAwaiter: CallAwaiter = new CallAwaiter();
             const exec = new Exec(kc, instance(fakeWebSocketInterface));
             const osStream = new ResizableWriteableStreamBuffer();
@@ -73,7 +73,7 @@ describe('Exec', () => {
 
             let statusOut = {} as V1Status;
 
-            const fakeConn: WebSocket = instance(fakeWebSocket);
+            const fakeConn: WebSocket.WebSocket = instance(fakeWebSocket);
             when(fakeWebSocketInterface.connect(`${path}?${args}`, null, anyFunction())).thenResolve(
                 fakeConn,
             );
@@ -125,7 +125,7 @@ describe('Exec', () => {
             await callAwaiter.awaitCall('send');
             verify(
                 fakeWebSocket.send(
-                    matchBuffer(WebSocketHandler.ResizeStream, JSON.stringify(initialTerminalSize)),
+                    matchBuffer(WebSocketHandler.ResizeStream, JSON.stringify(initialTerminalSize)) as any,
                 ),
             ).called();
 
@@ -133,7 +133,7 @@ describe('Exec', () => {
             const inputPromise = callAwaiter.awaitCall('send');
             isStream.put(msg);
             await inputPromise;
-            verify(fakeWebSocket.send(matchBuffer(WebSocketHandler.StdinStream, msg))).called();
+            verify(fakeWebSocket.send(matchBuffer(WebSocketHandler.StdinStream, msg) as any)).called();
 
             const terminalSize: TerminalSize = { height: 80, width: 120 };
             const resizePromise = callAwaiter.awaitCall('send');
@@ -142,7 +142,9 @@ describe('Exec', () => {
             osStream.emit('resize');
             await resizePromise;
             verify(
-                fakeWebSocket.send(matchBuffer(WebSocketHandler.ResizeStream, JSON.stringify(terminalSize))),
+                fakeWebSocket.send(
+                    matchBuffer(WebSocketHandler.ResizeStream, JSON.stringify(terminalSize)) as any,
+                ),
             ).called();
 
             const statusIn = {
