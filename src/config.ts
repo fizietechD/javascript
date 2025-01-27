@@ -7,6 +7,7 @@ import path = require('path');
 
 import request = require('request');
 import WebSocket = require('ws');
+import SocksProxyAgent = require('socks-proxy-agent');
 
 import * as api from './api';
 import { Authenticator } from './auth';
@@ -39,7 +40,7 @@ function fileExists(filepath: string): boolean {
 }
 
 export class KubeConfig {
-    private static authenticators: Authenticator[] = [
+    private authenticators: Authenticator[] = [
         new AzureAuth(),
         new GoogleCloudPlatformAuth(),
         new ExecAuth(),
@@ -126,11 +127,11 @@ export class KubeConfig {
 
     public loadFromFile(file: string, opts?: Partial<ConfigOptions>): void {
         const rootDirectory = path.dirname(file);
-        this.loadFromString(fs.readFileSync(file, 'utf8'), opts);
+        this.loadFromString(fs.readFileSync(file).toString('utf-8'), opts);
         this.makePathsAbsolute(rootDirectory);
     }
 
-    public async applytoHTTPSOptions(opts: https.RequestOptions | WebSocket.ClientOptions): Promise<void> {
+    public async applyToHTTPSOptions(opts: https.RequestOptions | WebSocket.ClientOptions): Promise<void> {
         await this.applyOptions(opts);
 
         const user = this.getCurrentUser();
@@ -170,6 +171,14 @@ export class KubeConfig {
         if (cluster && cluster.tlsServerName) {
             opts.agentOptions = { servername: cluster.tlsServerName } as https.AgentOptions;
         }
+
+        if (cluster && cluster.proxyUrl) {
+            if (cluster.proxyUrl.startsWith('socks')) {
+                opts.agent = new SocksProxyAgent.SocksProxyAgent(cluster.proxyUrl);
+            } else {
+                opts.proxy = cluster.proxyUrl;
+            }
+        }
     }
 
     public loadFromString(config: string, opts?: Partial<ConfigOptions>): void {
@@ -180,7 +189,12 @@ export class KubeConfig {
         this.currentContext = obj['current-context'];
     }
 
-    public loadFromOptions(options: any): void {
+    public loadFromOptions(options: {
+        clusters: Cluster[];
+        contexts: Context[];
+        currentContext: Context['name'];
+        users: User[];
+    }): void {
         this.clusters = options.clusters;
         this.contexts = options.contexts;
         this.users = options.users;
@@ -206,6 +220,12 @@ export class KubeConfig {
         const clusterName = 'inCluster';
         const userName = 'inClusterUser';
         const contextName = 'inClusterContext';
+        const tokenFile = process.env.TOKEN_FILE_PATH
+            ? process.env.TOKEN_FILE_PATH
+            : `${pathPrefix}${Config.SERVICEACCOUNT_TOKEN_PATH}`;
+        const caFile = process.env.KUBERNETES_CA_FILE_PATH
+            ? process.env.KUBERNETES_CA_FILE_PATH
+            : `${pathPrefix}${Config.SERVICEACCOUNT_CA_PATH}`;
 
         let scheme = 'https';
         if (port === '80' || port === '8080' || port === '8001') {
@@ -221,7 +241,7 @@ export class KubeConfig {
         this.clusters = [
             {
                 name: clusterName,
-                caFile: `${pathPrefix}${Config.SERVICEACCOUNT_CA_PATH}`,
+                caFile,
                 server: `${scheme}://${serverHost}:${port}`,
                 skipTLSVerify: false,
             },
@@ -232,7 +252,7 @@ export class KubeConfig {
                 authProvider: {
                     name: 'tokenFile',
                     config: {
-                        tokenFile: `${pathPrefix}${Config.SERVICEACCOUNT_TOKEN_PATH}`,
+                        tokenFile,
                     },
                 },
             },
@@ -240,7 +260,7 @@ export class KubeConfig {
         const namespaceFile = `${pathPrefix}${Config.SERVICEACCOUNT_NAMESPACE_PATH}`;
         let namespace: string | undefined;
         if (fileExists(namespaceFile)) {
-            namespace = fs.readFileSync(namespaceFile, 'utf8');
+            namespace = fs.readFileSync(namespaceFile).toString('utf-8');
         }
         this.contexts = [
             {
@@ -254,7 +274,7 @@ export class KubeConfig {
     }
 
     public mergeConfig(config: KubeConfig, preserveContext: boolean = false): void {
-        if (!preserveContext) {
+        if (!preserveContext && config.currentContext) {
             this.currentContext = config.currentContext;
         }
         config.clusters.forEach((cluster: Cluster) => {
@@ -272,11 +292,11 @@ export class KubeConfig {
         if (!this.clusters) {
             this.clusters = [];
         }
-        this.clusters.forEach((c: Cluster, ix: number) => {
-            if (c.name === cluster.name) {
-                throw new Error(`Duplicate cluster: ${c.name}`);
-            }
-        });
+
+        if (this.clusters.some((c) => c.name === cluster.name)) {
+            throw new Error(`Duplicate cluster: ${cluster.name}`);
+        }
+
         this.clusters.push(cluster);
     }
 
@@ -284,11 +304,11 @@ export class KubeConfig {
         if (!this.users) {
             this.users = [];
         }
-        this.users.forEach((c: User, ix: number) => {
-            if (c.name === user.name) {
-                throw new Error(`Duplicate user: ${c.name}`);
-            }
-        });
+
+        if (this.users.some((c) => c.name === user.name)) {
+            throw new Error(`Duplicate user: ${user.name}`);
+        }
+
         this.users.push(user);
     }
 
@@ -296,11 +316,11 @@ export class KubeConfig {
         if (!this.contexts) {
             this.contexts = [];
         }
-        this.contexts.forEach((c: Context, ix: number) => {
-            if (c.name === ctx.name) {
-                throw new Error(`Duplicate context: ${c.name}`);
-            }
-        });
+
+        if (this.contexts.some((c) => c.name === ctx.name)) {
+            throw new Error(`Duplicate context: ${ctx.name}`);
+        }
+
         this.contexts.push(ctx);
     }
 
@@ -358,7 +378,10 @@ export class KubeConfig {
             }
         }
 
-        if (fileExists(Config.SERVICEACCOUNT_TOKEN_PATH)) {
+        if (
+            fileExists(Config.SERVICEACCOUNT_TOKEN_PATH) ||
+            (process.env.TOKEN_FILE_PATH !== undefined && process.env.TOKEN_FILE_PATH !== '')
+        ) {
             this.loadFromCluster();
             return;
         }
@@ -445,7 +468,7 @@ export class KubeConfig {
         if (!user) {
             return;
         }
-        const authenticator = KubeConfig.authenticators.find((elt: Authenticator) => {
+        const authenticator = this.authenticators.find((elt: Authenticator) => {
             return elt.isAuthProvider(user);
         });
 

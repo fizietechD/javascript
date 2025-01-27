@@ -2,6 +2,7 @@ import { promisify } from 'util';
 import { expect } from 'chai';
 import WebSocket = require('isomorphic-ws');
 import { ReadableStreamBuffer, WritableStreamBuffer } from 'stream-buffers';
+import stream from 'node:stream';
 
 import { V1Status } from './api';
 import { KubeConfig } from './config';
@@ -114,13 +115,16 @@ describe('WebSocket', () => {
             } as User,
         ];
 
-        const mockWs = {} as WebSocket;
+        const mockWs = {} as WebSocket.WebSocket;
         let uriOut = '';
 
-        const handler = new WebSocketHandler(kc, (uri: string, opts: WebSocket.ClientOptions): WebSocket => {
-            uriOut = uri;
-            return mockWs as WebSocket;
-        });
+        const handler = new WebSocketHandler(
+            kc,
+            (uri: string, protocols: string[], opts: WebSocket.ClientOptions): WebSocket.WebSocket => {
+                uriOut = uri;
+                return mockWs as WebSocket.WebSocket;
+            },
+        );
         const path = '/some/path';
 
         const promise = handler.connect(path, null, null);
@@ -162,13 +166,16 @@ describe('WebSocket', () => {
             } as User,
         ];
 
-        const mockWs = {} as WebSocket;
+        const mockWs = {} as WebSocket.WebSocket;
         let uriOut = '';
 
-        const handler = new WebSocketHandler(kc, (uri: string, opts: WebSocket.ClientOptions): WebSocket => {
-            uriOut = uri;
-            return mockWs as WebSocket;
-        });
+        const handler = new WebSocketHandler(
+            kc,
+            (uri: string, protocols: string[], opts: WebSocket.ClientOptions): WebSocket.WebSocket => {
+                uriOut = uri;
+                return mockWs as WebSocket.WebSocket;
+            },
+        );
         const path = '/some/path';
 
         const promise = handler.connect(path, null, null);
@@ -228,13 +235,16 @@ describe('WebSocket', () => {
             close: () => {
                 closeCount++;
             },
-        } as WebSocket;
+        } as WebSocket.WebSocket;
         let uriOut = '';
 
-        const handler = new WebSocketHandler(kc, (uri: string, opts: WebSocket.ClientOptions): WebSocket => {
-            uriOut = uri;
-            return mockWs as WebSocket;
-        });
+        const handler = new WebSocketHandler(
+            kc,
+            (uri: string, protocols: string[], opts: WebSocket.ClientOptions): WebSocket.WebSocket => {
+                uriOut = uri;
+                return mockWs as WebSocket.WebSocket;
+            },
+        );
         const path = '/some/path';
 
         let textReceived = '';
@@ -294,9 +304,110 @@ describe('WebSocket', () => {
     });
 });
 
+describe('V5 protocol support', () => {
+    it('should handle close', async () => {
+        const kc = new KubeConfig();
+        const host = 'foo.company.com';
+        const server = `https://${host}`;
+        kc.clusters = [
+            {
+                name: 'cluster',
+                server,
+            } as Cluster,
+        ] as Cluster[];
+        kc.contexts = [
+            {
+                cluster: 'cluster',
+                user: 'user',
+            } as Context,
+        ] as Context[];
+        kc.users = [
+            {
+                name: 'user',
+            } as User,
+        ];
+
+        const mockWs = {
+            protocol: 'v5.channel.k8s.io',
+        } as WebSocket.WebSocket;
+        let uriOut = '';
+        let endCalled = false;
+        const handler = new WebSocketHandler(
+            kc,
+            (uri: string, protocols: string[], opts: WebSocket.ClientOptions): WebSocket.WebSocket => {
+                uriOut = uri;
+                return mockWs as WebSocket.WebSocket;
+            },
+            {
+                stdin: process.stdin,
+                stderr: process.stderr,
+                stdout: {
+                    end: () => {
+                        endCalled = true;
+                    },
+                } as stream.Writable,
+            },
+        );
+        const path = '/some/path';
+
+        const promise = handler.connect(path, null, null);
+        await setImmediatePromise();
+
+        expect(uriOut).to.equal(`wss://${host}${path}`);
+
+        const event = {
+            target: mockWs,
+            type: 'open',
+        };
+        mockWs.onopen!(event);
+        const errEvt = {
+            error: {},
+            message: 'some message',
+            type: 'some type',
+            target: mockWs,
+        };
+        const closeBuff = Buffer.alloc(2);
+        closeBuff.writeUint8(255, 0);
+        closeBuff.writeUint8(WebSocketHandler.StdoutStream, 1);
+
+        mockWs.onmessage!({
+            data: closeBuff,
+            type: 'type',
+            target: mockWs,
+        });
+        await promise;
+        expect(endCalled).to.be.true;
+    });
+    it('should handle closing stdin < v4 protocol', () => {
+        const ws = {
+            // send is not defined, so this will throw if we try to send the close message.
+            close: () => {},
+        } as WebSocket;
+        const stdinStream = new ReadableStreamBuffer();
+        WebSocketHandler.handleStandardInput(ws, stdinStream);
+        stdinStream.emit('end');
+    });
+    it('should handle closing stdin v5 protocol', () => {
+        let sent: Buffer | null = null;
+        const ws = {
+            protocol: 'v5.channel.k8s.io',
+            send: (data) => {
+                sent = data;
+            },
+            close: () => {},
+        } as WebSocket;
+        const stdinStream = new ReadableStreamBuffer();
+        WebSocketHandler.handleStandardInput(ws, stdinStream);
+        stdinStream.emit('end');
+        expect(sent).to.not.be.null;
+        expect(sent!.readUint8(0)).to.equal(255); // CLOSE signal
+        expect(sent!.readUint8(1)).to.equal(0); // Stdin stream is #0
+    });
+});
+
 describe('Restartable Handle Standard Input', () => {
     it('should throw on negative retry', () => {
-        const p = new Promise<WebSocket>(() => {});
+        const p = new Promise<WebSocket.WebSocket>(() => {});
         expect(() => WebSocketHandler.restartableHandleStandardInput(() => p, null, 0, -1)).to.throw(
             "retryCount can't be lower than 0.",
         );
@@ -311,10 +422,10 @@ describe('Restartable Handle Standard Input', () => {
         WebSocketHandler.processData(
             'some test data',
             null,
-            (): Promise<WebSocket> => {
-                return new Promise<WebSocket>((resolve) => {
+            (): Promise<WebSocket.WebSocket> => {
+                return new Promise<WebSocket.WebSocket>((resolve) => {
                     count++;
-                    resolve(ws as WebSocket);
+                    resolve(ws as WebSocket.WebSocket);
                 });
             },
             0,
